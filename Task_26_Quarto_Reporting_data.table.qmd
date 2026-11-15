@@ -1,0 +1,790 @@
+---
+title: "Task 26"
+subtitle: "Reusable Quarto Reporting Template"
+author: "Pavani"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    code-tools: true
+    embed-resources: true
+execute:
+  echo: true
+  warning: false
+  message: false
+  error: false
+params:
+  study_id: "STUDY-001"
+  study_title: "Clinical Study"
+  treatment_group: "All"
+  number_of_subjects: 1000
+  number_of_lab_records: 5000
+  random_seed: 2026
+---
+
+# About this task
+
+## Task objective
+
+Build a reusable Quarto report that can be rendered for different study settings by changing parameter values instead of manually rewriting the report.
+
+# Report parameters
+
+The values below are supplied through the YAML `params` section at the top of this file.
+
+| Parameter | Purpose |
+|---|---|
+| `study_id` | Study identifier shown in the report |
+| `study_title` | Report title for the study |
+| `treatment_group` | `All`, `Placebo`, `Drug A` or `Drug B` |
+| `number_of_subjects` | Number of synthetic subjects to generate |
+| `number_of_lab_records` | Number of synthetic laboratory records to generate |
+| `random_seed` | Seed used to make data generation reproducible |
+
+You can change these values in the YAML header and render the report again. The same report structure will be reused with the new inputs.
+
+# Prepare the R environment
+
+This report uses the following packages:
+
+- `data.table` for data manipulation, filtering, joins and summaries.
+- `ggplot2` for plots.
+- `knitr` for formatted tables.
+
+The setup chunk checks whether the packages are installed. It installs missing packages from CRAN if needed.
+
+```{r setup}
+required_packages <- c("data.table", "ggplot2", "knitr")
+
+installed_packages <- rownames(installed.packages())
+missing_packages <- setdiff(required_packages, installed_packages)
+
+if (length(missing_packages) > 0) {
+  install.packages(
+    missing_packages,
+    repos = "https://cloud.r-project.org"
+  )
+}
+
+suppressPackageStartupMessages({
+  library(data.table)
+  library(ggplot2)
+  library(knitr)
+})
+
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 8,
+  fig.height = 5,
+  dpi = 120
+)
+```
+
+# Create the project folders
+
+The report creates the required folders automatically. They will be created relative to the current working directory used to render this Quarto file.
+
+```{r create-folders}
+project_folders <- c(
+  "data",
+  "results",
+  "results/tables",
+  "results/figures",
+  "reports",
+  "documentation",
+  "logs"
+)
+
+for (folder in project_folders) {
+  dir.create(
+    folder,
+    recursive = TRUE,
+    showWarnings = FALSE
+  )
+}
+
+cat("Project folders are ready.\n")
+cat("Working directory:", getwd(), "\n")
+```
+
+Expected folder structure:
+
+```text
+Task_26_Quarto_Reporting/
+|
+|-- data/
+|-- results/
+|   |-- tables/
+|   |-- figures/
+|-- reports/
+|-- documentation/
+|-- logs/
+|
+|-- Task_26_Quarto_Reporting.qmd
+```
+
+# Display the report information
+
+The following values come from the YAML parameters. This is what makes the report reusable.
+
+```{r report-information}
+study_id <- params$study_id
+study_title <- params$study_title
+selected_treatment <- params$treatment_group
+
+cat("Study ID:", study_id, "\n")
+cat("Study title:", study_title, "\n")
+cat("Treatment selection:", selected_treatment, "\n")
+cat("Report date:", as.character(Sys.Date()), "\n")
+```
+
+**Study ID:** `r params$study_id`
+
+**Study title:** `r params$study_title`
+
+**Treatment selection:** `r params$treatment_group`
+
+**Report generated on:** `r Sys.Date()`
+
+# Generate synthetic clinical-style datasets
+
+For this exercise, we create two simplified datasets:
+
+- ADSL: one record per subject.
+- ADLB: multiple laboratory records per subject.
+
+The number of rows is controlled by the YAML parameters.
+
+```{r generate-data}
+set.seed(params$random_seed)
+
+n_subjects <- as.integer(params$number_of_subjects)
+n_lab_records <- as.integer(params$number_of_lab_records)
+
+if (
+  length(n_subjects) != 1 ||
+  is.na(n_subjects) ||
+  n_subjects < 1
+) {
+  stop("number_of_subjects must be a positive whole number.")
+}
+
+if (
+  length(n_lab_records) != 1 ||
+  is.na(n_lab_records) ||
+  n_lab_records < 1
+) {
+  stop("number_of_lab_records must be a positive whole number.")
+}
+
+# ADSL: one row per subject.
+adsl <- data.frame(
+  USUBJID = sprintf("SUBJ%05d", seq_len(n_subjects)),
+  AGE = sample(18:80, n_subjects, replace = TRUE),
+  SEX = sample(c("F", "M"), n_subjects, replace = TRUE),
+  TRT01A = sample(
+    c("Placebo", "Drug A", "Drug B"),
+    n_subjects,
+    replace = TRUE
+  ),
+  COUNTRY = sample(
+    c("India", "USA", "UK", "Germany"),
+    n_subjects,
+    replace = TRUE
+  ),
+  stringsAsFactors = FALSE
+)
+
+# ADLB: laboratory records linked to subjects in ADSL.
+adlb <- data.frame(
+  USUBJID = sample(
+    adsl$USUBJID,
+    n_lab_records,
+    replace = TRUE
+  ),
+  PARAMCD = sample(
+    c("ALT", "AST", "HB", "WBC", "CREAT"),
+    n_lab_records,
+    replace = TRUE
+  ),
+  AVAL = round(
+    rnorm(n_lab_records, mean = 50, sd = 12),
+    2
+  ),
+  VISIT = sample(
+    c("Baseline", "Week 4", "Week 8", "Week 12"),
+    n_lab_records,
+    replace = TRUE
+  ),
+  stringsAsFactors = FALSE
+)
+
+# Convert both datasets to data.table objects.
+# setDT() converts by reference, avoiding an unnecessary full copy.
+data.table::setDT(adsl)
+data.table::setDT(adlb)
+
+# Save the generated datasets for review and reuse.
+write.csv(
+  adsl,
+  "data/synthetic_adsl.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  adlb,
+  "data/synthetic_adlb.csv",
+  row.names = FALSE
+)
+
+cat("ADSL records:", nrow(adsl), "\n")
+cat("ADLB records:", nrow(adlb), "\n")
+```
+
+## Inspect the datasets
+
+```{r inspect-data}
+knitr::kable(
+  head(adsl, 6),
+  caption = "First six records from the synthetic ADSL dataset"
+)
+
+knitr::kable(
+  head(adlb, 6),
+  caption = "First six records from the synthetic ADLB dataset"
+)
+```
+
+# Basic data checks
+
+Before creating summaries, perform a few simple checks.
+
+```{r data-checks}
+adsl_has_unique_subjects <- !anyDuplicated(adsl$USUBJID)
+
+adlb_subjects_exist <- all(
+  adlb$USUBJID %in% adsl$USUBJID
+)
+
+data_check_results <- data.frame(
+  CHECK = c(
+    "ADSL subject identifiers are unique",
+    "All ADLB subject identifiers exist in ADSL"
+  ),
+  STATUS = ifelse(
+    c(adsl_has_unique_subjects, adlb_subjects_exist),
+    "PASS",
+    "FAIL"
+  ),
+  stringsAsFactors = FALSE
+)
+
+knitr::kable(
+  data_check_results,
+  caption = "Basic input data checks"
+)
+
+write.csv(
+  data_check_results,
+  "results/tables/data_check_results.csv",
+  row.names = FALSE
+)
+
+if (!all(data_check_results$STATUS == "PASS")) {
+  stop("One or more basic data checks failed.")
+}
+```
+
+# Apply the treatment parameter
+
+The report can display all treatment groups or one selected group.
+
+Valid values are:
+
+- `All`
+- `Placebo`
+- `Drug A`
+- `Drug B`
+
+```{r filter-treatment}
+valid_treatments <- c("All", "Placebo", "Drug A", "Drug B")
+
+if (!selected_treatment %in% valid_treatments) {
+  stop(
+    "Invalid treatment_group. Use All, Placebo, Drug A or Drug B."
+  )
+}
+
+if (selected_treatment == "All") {
+  adsl_analysis <- adsl
+} else {
+  # data.table row filtering: DT[i, ]
+  adsl_analysis <- adsl[TRT01A == selected_treatment]
+}
+
+# Add treatment information to each laboratory record.
+# This data.table join keeps the laboratory records and brings in TRT01A.
+adlb_with_treatment <- adlb[
+  adsl[, .(USUBJID, TRT01A)],
+  on = "USUBJID",
+  nomatch = 0
+]
+
+if (selected_treatment == "All") {
+  adlb_analysis <- adlb_with_treatment
+} else {
+  adlb_analysis <- adlb_with_treatment[
+    TRT01A == selected_treatment
+  ]
+}
+
+cat("Subjects included:", nrow(adsl_analysis), "\n")
+cat("Laboratory records included:", nrow(adlb_analysis), "\n")
+```
+
+# Study overview
+
+This section provides a high-level summary of the selected study population.
+
+```{r study-overview}
+study_overview <- data.frame(
+  STUDY_ID = study_id,
+  STUDY_TITLE = study_title,
+  TREATMENT_SELECTION = selected_treatment,
+  TOTAL_SUBJECTS_GENERATED = nrow(adsl),
+  SUBJECTS_INCLUDED = nrow(adsl_analysis),
+  TOTAL_LAB_RECORDS_GENERATED = nrow(adlb),
+  LAB_RECORDS_INCLUDED = nrow(adlb_analysis),
+  REPORT_DATE = as.character(Sys.Date()),
+  stringsAsFactors = FALSE
+)
+
+knitr::kable(
+  study_overview,
+  caption = "Study overview"
+)
+
+write.csv(
+  study_overview,
+  "results/tables/study_overview.csv",
+  row.names = FALSE
+)
+```
+
+# Demographic summary
+
+We summarize the number of subjects and age information by treatment group.
+
+```{r demographic-summary}
+demographic_summary <- adsl_analysis[
+  ,
+  .(
+    N_SUBJECTS = .N,
+    MEAN_AGE = round(mean(AGE), 1),
+    SD_AGE = round(sd(AGE), 1),
+    MIN_AGE = min(AGE),
+    MAX_AGE = max(AGE)
+  ),
+  by = TRT01A
+][order(TRT01A)]
+
+knitr::kable(
+  demographic_summary,
+  caption = "Demographic summary by treatment group"
+)
+
+write.csv(
+  demographic_summary,
+  "results/tables/demographic_summary.csv",
+  row.names = FALSE
+)
+```
+
+## Subject counts by sex
+
+```{r sex-summary}
+sex_summary <- adsl_analysis[
+  ,
+  .(N_SUBJECTS = .N),
+  by = .(TRT01A, SEX)
+][order(TRT01A, SEX)]
+
+knitr::kable(
+  sex_summary,
+  caption = "Subject counts by treatment and sex"
+)
+
+write.csv(
+  sex_summary,
+  "results/tables/sex_summary.csv",
+  row.names = FALSE
+)
+```
+
+# Demographic visualization
+
+The following histogram displays the age distribution of the selected subjects.
+
+```{r}
+#| label: age-histogram
+#| fig-cap: "Age distribution of selected subjects"
+
+age_plot <- ggplot(
+  adsl_analysis,
+  aes(x = AGE)
+) +
+  geom_histogram(
+    binwidth = 5,
+    boundary = 0,
+    color = "white"
+  ) +
+  labs(
+    title = "Age Distribution",
+    subtitle = paste("Study:", study_id),
+    x = "Age in years",
+    y = "Number of subjects"
+  ) +
+  theme_minimal()
+
+age_plot
+```
+
+Save the plot as a PNG file.
+
+```{r save-age-plot}
+ggsave(
+  filename = "results/figures/age_distribution.png",
+  plot = age_plot,
+  width = 8,
+  height = 5,
+  dpi = 300
+)
+```
+
+# Laboratory analysis
+
+We summarize laboratory values by treatment group and parameter.
+
+The values in this example are simulated. They are not clinical reference ranges and must not be used for medical interpretation.
+
+```{r laboratory-summary}
+laboratory_summary <- adlb_analysis[
+  ,
+  .(
+    N_RECORDS = sum(!is.na(AVAL)),
+    MEAN_AVAL = round(mean(AVAL, na.rm = TRUE), 2),
+    SD_AVAL = round(sd(AVAL, na.rm = TRUE), 2),
+    MIN_AVAL = round(min(AVAL, na.rm = TRUE), 2),
+    MAX_AVAL = round(max(AVAL, na.rm = TRUE), 2)
+  ),
+  by = .(TRT01A, PARAMCD)
+][order(TRT01A, PARAMCD)]
+
+knitr::kable(
+  laboratory_summary,
+  caption = "Laboratory summary by treatment and parameter"
+)
+
+write.csv(
+  laboratory_summary,
+  "results/tables/laboratory_summary.csv",
+  row.names = FALSE
+)
+```
+
+# Laboratory visualization
+
+The boxplot displays the distribution of laboratory values by treatment group. Each panel represents one laboratory parameter.
+
+```{r}
+#| label: laboratory-boxplot
+#| fig-cap: "Laboratory value distributions by treatment group"
+
+laboratory_plot <- ggplot(
+  adlb_analysis,
+  aes(
+    x = TRT01A,
+    y = AVAL
+  )
+) +
+  geom_boxplot() +
+  facet_wrap(
+    ~ PARAMCD,
+    scales = "free_y"
+  ) +
+  labs(
+    title = "Laboratory Values by Treatment",
+    subtitle = paste("Study:", study_id),
+    x = "Treatment group",
+    y = "Laboratory value"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(
+      angle = 30,
+      hjust = 1
+    )
+  )
+
+laboratory_plot
+```
+
+Save the plot as a PNG file.
+
+```{r save-laboratory-plot}
+ggsave(
+  filename = "results/figures/laboratory_boxplot.png",
+  plot = laboratory_plot,
+  width = 10,
+  height = 7,
+  dpi = 300
+)
+```
+
+# Save a report summary
+
+The following code creates a small text file recording the main information from this report.
+
+```{r save-report-summary}
+summary_lines <- c(
+  "TASK 26 - REUSABLE QUARTO REPORT",
+  "================================",
+  "",
+  paste("Study ID:", study_id),
+  paste("Study title:", study_title),
+  paste("Treatment selection:", selected_treatment),
+  paste("Report date:", Sys.Date()),
+  paste("Subjects included:", nrow(adsl_analysis)),
+  paste("Laboratory records included:", nrow(adlb_analysis)),
+  "",
+  "OUTPUT FILES",
+  "------------",
+  "data/synthetic_adsl.csv",
+  "data/synthetic_adlb.csv",
+  "results/tables/study_overview.csv",
+  "results/tables/demographic_summary.csv",
+  "results/tables/sex_summary.csv",
+  "results/tables/laboratory_summary.csv",
+  "results/tables/data_check_results.csv",
+  "results/figures/age_distribution.png",
+  "results/figures/laboratory_boxplot.png"
+)
+
+writeLines(
+  summary_lines,
+  "documentation/task26_report_summary.txt"
+)
+
+cat("Report summary saved.\n")
+```
+
+# R and package session information
+
+Session information helps another programmer understand the environment in which the report was generated.
+
+It records the R version, operating system and package versions.
+
+```{r session-information}
+cat("R version:\n")
+print(R.version.string)
+
+cat("\nPlatform:\n")
+print(R.version$platform)
+
+package_versions <- data.frame(
+  PACKAGE = c("data.table", "ggplot2", "knitr"),
+  VERSION = vapply(
+    c("data.table", "ggplot2", "knitr"),
+    function(package_name) {
+      as.character(packageVersion(package_name))
+    },
+    character(1)
+  ),
+  stringsAsFactors = FALSE
+)
+
+knitr::kable(
+  package_versions,
+  caption = "Package versions used in this report"
+)
+
+write.csv(
+  package_versions,
+  "results/tables/package_versions.csv",
+  row.names = FALSE
+)
+```
+
+## Complete session details
+
+```{r full-session-information}
+sessionInfo()
+```
+
+# Output inventory
+
+The following code lists the files created during report execution.
+
+```{r output-inventory}
+output_directories <- c(
+  "data",
+  "results",
+  "documentation"
+)
+
+output_inventory <- unlist(
+  lapply(
+    output_directories,
+    function(folder) {
+      if (dir.exists(folder)) {
+        list.files(
+          folder,
+          recursive = TRUE,
+          full.names = FALSE
+        )
+      } else {
+        character(0)
+      }
+    }
+  )
+)
+
+inventory_table <- data.frame(
+  FILE = output_inventory,
+  stringsAsFactors = FALSE
+)
+
+knitr::kable(
+  inventory_table,
+  caption = "Files generated by this Quarto report"
+)
+
+writeLines(
+  output_inventory,
+  "results/output_inventory.txt"
+)
+```
+
+# Final checks
+
+The report should complete with the following conditions:
+
+- Synthetic ADSL and ADLB datasets were generated.
+- Basic dataset checks passed.
+- The requested treatment selection was applied.
+- Demographic and laboratory summary tables were generated.
+- Age and laboratory plots were generated.
+- CSV and PNG output files were saved.
+- R and package session information was recorded.
+
+```{r final-checks}
+final_checks <- data.frame(
+  CHECK = c(
+    "ADSL dataset created",
+    "ADLB dataset created",
+    "Study overview created",
+    "Demographic summary created",
+    "Laboratory summary created",
+    "Age plot saved",
+    "Laboratory plot saved",
+    "Report summary saved"
+  ),
+  STATUS = c(
+    file.exists("data/synthetic_adsl.csv"),
+    file.exists("data/synthetic_adlb.csv"),
+    file.exists("results/tables/study_overview.csv"),
+    file.exists("results/tables/demographic_summary.csv"),
+    file.exists("results/tables/laboratory_summary.csv"),
+    file.exists("results/figures/age_distribution.png"),
+    file.exists("results/figures/laboratory_boxplot.png"),
+    file.exists("documentation/task26_report_summary.txt")
+  ),
+  stringsAsFactors = FALSE
+)
+
+final_checks$RESULT <- ifelse(
+  final_checks$STATUS,
+  "PASS",
+  "FAIL"
+)
+
+knitr::kable(
+  final_checks,
+  caption = "Final report generation checks"
+)
+
+if (!all(final_checks$STATUS)) {
+  stop("One or more report output checks failed.")
+}
+
+cat("\nAll final checks passed.\n")
+```
+
+# How to render this report
+
+## Option 1: Render from RStudio
+
+1. Open `Task_26_Quarto_Reporting.qmd` in RStudio.
+2. Confirm that the working directory is the project folder.
+3. Click **Render**.
+4. Quarto will execute the code and generate the HTML report in the `reports` folder.
+
+## Option 2: Render from the R console
+
+```{r render-command, eval=FALSE}
+quarto::quarto_render(
+  "Task_26_Quarto_Reporting.qmd"
+)
+```
+
+You can also render from the terminal:
+
+```bash
+quarto render Task_26_Quarto_Reporting.qmd
+```
+
+## Render with different parameters
+
+The template can be reused for another treatment group without editing the report's analysis code.
+
+For example, run the following from the R console after saving the QMD file:
+
+```r
+quarto::quarto_render(
+  "Task_26_Quarto_Reporting.qmd",
+  execute_params = list(
+    study_id = "STUDY-002",
+    study_title = "Second Synthetic Clinical Study",
+    treatment_group = "Drug A",
+    number_of_subjects = 1500,
+    number_of_lab_records = 7500,
+    random_seed = 2027
+  )
+)
+```
+
+Try changing `treatment_group` to `"Placebo"`, `"Drug B"` or `"All"`.
+
+# Definition of Done
+
+Task 26 can be considered complete when:
+
+- [ ] The Quarto file contains a consistent YAML header.
+- [ ] Study inputs are controlled through parameters.
+- [ ] Synthetic datasets are generated and saved.
+- [ ] Demographic and laboratory tables are created.
+- [ ] Plots are created and saved.
+- [ ] Session information and package versions are recorded.
+- [ ] The report renders successfully from a clean R session.
+- [ ] The report can be reused with different parameter values.
+- [ ] The generated output files are reviewed.
+
+---
+
+**End of Task 26 - Reusable Quarto Reporting Template**
+
+All data in this exercise is synthetic and intended only for learning and demonstration.
